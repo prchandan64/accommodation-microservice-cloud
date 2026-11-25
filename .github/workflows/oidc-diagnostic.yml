@@ -1,0 +1,55 @@
+name: OIDC Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  diagnose:
+    name: Inspect OIDC Claims & Test Role Assumption
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect OIDC claims safely (no raw JWT printed)
+        run: |
+          python3 - << 'PYEOF'
+          import base64, json, os, urllib.request
+          req_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+          req_tok = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+          if not req_url or not req_tok:
+              raise SystemExit("OIDC request environment variables not present")
+          sep = "&" if "?" in req_url else "?"
+          url = f"{req_url}{sep}audience=sts.amazonaws.com"
+          req = urllib.request.Request(url, headers={"Authorization": f"Bearer {req_tok}"})
+          with urllib.request.urlopen(req, timeout=10) as r:
+              jwt_token = json.loads(r.read().decode())["value"]
+          payload_b64 = jwt_token.split(".")[1]
+          payload_b64 += "=" * (-len(payload_b64) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload_b64).decode())
+          for k in ("iss", "aud", "sub", "repository", "ref", "event_name", "job_workflow_ref"):
+              print(f"{k}={claims.get(k)}")
+          PYEOF
+
+      - name: Verify AWS_CD_ROLE_ARN format
+        env:
+          ROLE_ARN: ${{ secrets.AWS_CD_ROLE_ARN }}
+        run: |
+          python3 - << 'PYEOF'
+          import os
+          arn = os.environ.get("ROLE_ARN", "").strip()
+          print("ROLE_ARN_SET=", bool(arn))
+          print("STARTS_WITH_516821890151=", arn.startswith("arn:aws:iam::516821890151:role/"))
+          print("ROLE_NAME=", arn.split("/")[-1] if "/" in arn else "INVALID")
+          PYEOF
+
+      - name: Test AWS OIDC role assumption
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CD_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Verify STS caller identity
+        run: aws sts get-caller-identity --output json
