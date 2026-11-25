@@ -23,7 +23,12 @@ permissions:
 jobs:
   deploy:
     name: Build, Push & Deploy to EC2 via OIDC + SSM
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      vars.ACCOMMODATION_CD_ENABLED == 'true' &&
+      (
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') ||
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -36,6 +41,26 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Verify commit passed Accommodation CI on main
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          python3 - << 'PYEOF'
+          import json, os, sys, urllib.request
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["TARGET_SHA"]
+          url = f"https://api.github.com/repos/{repo}/actions/workflows/accommodation-ci.yml/runs?head_sha={sha}&branch=main&status=completed"
+          req = urllib.request.Request(url, headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}", "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req, timeout=15) as r:
+              runs = json.loads(r.read().decode()).get("workflow_runs", [])
+          if not any(run.get("conclusion") == "success" for run in runs):
+              print(f"ERROR: Commit {sha} has no passing Accommodation CI run on main.", file=sys.stderr)
+              sys.exit(1)
+          print(f"Verified passing Accommodation CI run for {sha} on main.")
+          PYEOF
 
       - name: Compute immutable image tag
         id: meta
@@ -97,7 +122,7 @@ jobs:
               "set -euo pipefail",
               "cd /opt/accommodation-deploy",
               "PREV_TAG=$(grep '^IMAGE_TAG=' .env.accommodation | cut -d= -f2)",
-              f"echo \"Previous tag: ${{PREV_TAG}} | New tag: {new_tag}\"",
+              f"echo \"Previous tag: $PREV_TAG | New tag: {new_tag}\"",
               "cp .env.accommodation .env.accommodation.bak",
               "set -a; source .env.accommodation; set +a",
               "BACKUP_FILE=\"/tmp/rds-predeploy-$(date -u +%Y%m%dT%H%M%SZ).dump\"",
@@ -132,7 +157,9 @@ jobs:
 
       - name: Record deployed image digests
         run: |
-          echo "### Deployed Accommodation Images" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Tag: \`${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Backend Digest: \`${{ steps.build_backend.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Frontend Digest: \`${{ steps.build_frontend.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Deployed Accommodation Images"
+            echo "- Tag: \`${{ steps.meta.outputs.tag }}\`"
+            echo "- Backend Digest: \`${{ steps.build_backend.outputs.digest }}\`"
+            echo "- Frontend Digest: \`${{ steps.build_frontend.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

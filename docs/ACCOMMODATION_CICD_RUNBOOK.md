@@ -1,11 +1,12 @@
 # Accommodation Microservice — CI/CD Operations & Rollback Runbook
 
-## 1. Required GitHub Secrets (Repository Settings -> Secrets and variables -> Actions)
-| Secret | Purpose |
-| :--- | :--- |
-| `DOCKERHUB_USERNAME` | Docker Hub username (`prchandan6666`) |
-| `DOCKERHUB_TOKEN` | Scoped Docker Hub Read/Write access token (never account password) |
-| `AWS_CD_ROLE_ARN` | ARN of `accommodation-github-cd-role` (`arn:aws:iam::516821890151:role/accommodation-github-cd-role`) |
+## 1. Required GitHub Secrets & Variables (Repository Settings -> Secrets and variables -> Actions)
+| Type | Name | Purpose |
+| :--- | :--- | :--- |
+| Secret | `DOCKERHUB_USERNAME` | Docker Hub username (`prchandan6666`) |
+| Secret | `DOCKERHUB_TOKEN` | Scoped Docker Hub Read/Write access token (never account password) |
+| Secret | `AWS_CD_ROLE_ARN` | ARN of `accommodation-github-cd-role` (`arn:aws:iam::516821890151:role/accommodation-github-cd-role`) |
+| Variable | `ACCOMMODATION_CD_ENABLED` | Set to `true` only after Secrets, AWS OIDC, and SSM are configured (temporary deployment guard) |
 
 ---
 
