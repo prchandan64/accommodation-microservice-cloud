@@ -1,0 +1,62 @@
+# Full-stack docker-compose for local development
+# Usage: docker compose up --build
+# Services: postgres, backend (FastAPI), frontend (React/nginx)
+name: accommodation-microservice
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: accommodation
+      POSTGRES_PASSWORD: accommodation
+      POSTGRES_DB: campus_mobility_accommodation
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./database/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U accommodation -d campus_mobility_accommodation"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://accommodation:accommodation@db:5432/campus_mobility_accommodation
+      JWT_EXPIRE_MINUTES: "60"
+      OTP_TTL_SECONDS: "600"
+      ENVIRONMENT: ${ENVIRONMENT:-dev}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/accommodation/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1/accommodation
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  pgdata:

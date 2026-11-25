@@ -1,0 +1,50 @@
+services:
+  db:
+    ports: !override
+      - "127.0.0.1:5433:5432"
+    volumes: !override
+      - pgdata_local:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./database/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    networks:
+      - accommodation_net
+
+  backend:
+    ports: !override
+      - "127.0.0.1:8001:8000"
+    env_file:
+      - .env.local-test
+    networks:
+      - accommodation_net
+
+  frontend:
+    ports: !override
+      - "127.0.0.1:3001:80"
+    networks:
+      - accommodation_net
+
+  db-test:
+    image: postgres:16-alpine
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: accommodation
+      POSTGRES_PASSWORD: accommodation
+      POSTGRES_DB: campus_mobility_accommodation
+    volumes:
+      - pgdata_test:/var/lib/postgresql/data
+      - ./database/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+    networks:
+      - accommodation_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U accommodation -d campus_mobility_accommodation"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+networks:
+  accommodation_net:
+    driver: bridge
+
+volumes:
+  pgdata_local:
+  pgdata_test:
