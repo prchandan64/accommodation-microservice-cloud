@@ -16,15 +16,25 @@ class Settings(BaseSettings):
     aws_rds_db: str = "campus_mobility_accommodation"
     aws_rds_port: int = 5432
     aws_rds_sslmode: str = "require"
+    aws_rds_sslrootcert: str = ""
+
+    # AWS S3 Media Storage (uses EC2 IAM instance role in production)
+    aws_region: str = "ap-south-1"
+    s3_bucket_name: str = ""
+    s3_images_prefix: str = "images/"
+    s3_presigned_ttl_seconds: int = 900
 
     def get_effective_database_url(self) -> str:
         """Returns the AWS RDS URL if RDS parameters are provided, otherwise database_url."""
         if self.aws_rds_endpoint and self.aws_rds_user and self.aws_rds_password:
-            return (
+            url = (
                 f"postgresql+psycopg://{self.aws_rds_user}:{self.aws_rds_password}@"
                 f"{self.aws_rds_endpoint}:{self.aws_rds_port}/{self.aws_rds_db}"
                 f"?sslmode={self.aws_rds_sslmode}"
             )
+            if self.aws_rds_sslrootcert:
+                url += f"&sslrootcert={self.aws_rds_sslrootcert}"
+            return url
         return self.database_url
 
     hold_minutes: int = 30            # how long an unpaid bed is held

@@ -24,6 +24,7 @@ WORKDIR /app
 COPY backend/app /app/app
 COPY backend/alembic /app/alembic
 COPY backend/alembic.ini /app/alembic.ini
+COPY backend/certs /app/certs
 COPY database/schema.sql /database/schema.sql
 
 RUN useradd -u 1001 -m appuser && chown -R appuser:appuser /app

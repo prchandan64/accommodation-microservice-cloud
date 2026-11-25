@@ -2,33 +2,30 @@ name: accommodation-prod
 
 services:
   migrate:
-    image: ${BACKEND_IMAGE:-accommodation-ms-backend}:${IMAGE_TAG:-latest}
+    image: ${BACKEND_IMAGE:-prchandan6666/accommodation-backend}:${IMAGE_TAG:-v1.1.0}
     command: ["alembic", "upgrade", "head"]
     env_file:
       - path: .env.accommodation
         required: false
+    mem_limit: 512m
     restart: "no"
     networks:
       - accommodation_prod_net
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ap-south-1
+        awslogs-group: /accommodation/prod
+        awslogs-stream: migrate
 
   backend:
-    image: ${BACKEND_IMAGE:-accommodation-ms-backend}:${IMAGE_TAG:-latest}
-    build:
-      context: ../..
-      dockerfile: backend/Dockerfile
+    image: ${BACKEND_IMAGE:-prchandan6666/accommodation-backend}:${IMAGE_TAG:-v1.1.0}
     env_file:
       - path: .env.accommodation
         required: false
+    mem_limit: 768m
     expose:
       - "8000"
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/accommodation/ready')\""]
@@ -39,20 +36,17 @@ services:
     networks:
       - accommodation_prod_net
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ap-south-1
+        awslogs-group: /accommodation/prod
+        awslogs-stream: backend
 
   frontend:
-    image: ${FRONTEND_IMAGE:-accommodation-ms-frontend}:${IMAGE_TAG:-latest}
-    build:
-      context: ../../frontend
-      dockerfile: Dockerfile
-      args:
-        VITE_API_BASE_URL: /api/v1/accommodation
+    image: ${FRONTEND_IMAGE:-prchandan6666/accommodation-frontend}:${IMAGE_TAG:-v1.1.0}
     volumes:
       - ./nginx.accommodation.conf:/etc/nginx/conf.d/default.conf:ro
+    mem_limit: 128m
     expose:
       - "80"
     depends_on:
@@ -67,10 +61,11 @@ services:
     networks:
       - accommodation_prod_net
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ap-south-1
+        awslogs-group: /accommodation/prod
+        awslogs-stream: frontend
 
   caddy:
     image: caddy:2-alpine
@@ -83,6 +78,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    mem_limit: 128m
     depends_on:
       frontend:
         condition: service_healthy
@@ -90,10 +86,11 @@ services:
     networks:
       - accommodation_prod_net
     logging:
-      driver: json-file
+      driver: awslogs
       options:
-        max-size: "10m"
-        max-file: "3"
+        awslogs-region: ap-south-1
+        awslogs-group: /accommodation/prod
+        awslogs-stream: caddy
 
 networks:
   accommodation_prod_net:

@@ -1,0 +1,39 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "S3ListProjectBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::accommodation-media-516821890151-ap-south-1"
+    },
+    {
+      "Sid": "S3ReadWriteProjectObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::accommodation-media-516821890151-ap-south-1/*"
+    },
+    {
+      "Sid": "CloudWatchLogsWriteProd",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": [
+        "arn:aws:logs:ap-south-1:516821890151:log-group:/accommodation/prod*",
+        "arn:aws:logs:ap-south-1:516821890151:log-group:/accommodation/prod*:log-stream:*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-south-1"
+        }
+      }
+    }
+  ]
+}

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import AcademicTerm, Block, Hostel, RoomType
+from ..services import s3_storage
 
 router = APIRouter(tags=["Catalogue"])
 
@@ -103,3 +104,11 @@ def list_terms(status: Optional[str] = None, db: Session = Depends(get_db)):
         )
         for t in terms
     ]
+
+
+@router.get("/hostels/{hostel_id}/images")
+def get_hostel_images(hostel_id: uuid.UUID, db: Session = Depends(get_db)):
+    if not db.get(Hostel, hostel_id):
+        from ..errors import DomainError
+        raise DomainError(404, "HOSTEL_NOT_FOUND", "Hostel not found")
+    return {"hostel_id": str(hostel_id), "images": s3_storage.list_hostel_images(hostel_id)}

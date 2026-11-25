@@ -1,0 +1,138 @@
+name: Accommodation CD
+
+on:
+  workflow_run:
+    workflows: ["Accommodation CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_reason:
+        description: "Reason for manual production deployment"
+        required: true
+        default: "Manual approved deployment"
+
+concurrency:
+  group: accommodation-prod-deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Build, Push & Deploy to EC2 via OIDC + SSM
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AWS_REGION: ap-south-1
+      EC2_INSTANCE_ID: i-04421ed81c55d4981
+      PUBLIC_DOMAIN: accom-portal-chandan.duckdns.org
+      S3_BUCKET: accommodation-media-516821890151-ap-south-1
+    steps:
+      - name: Checkout verified commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Compute immutable image tag
+        id: meta
+        run: |
+          SHORT_SHA=$(git rev-parse --short=12 HEAD)
+          echo "tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push backend image
+        id: build_backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/accommodation-backend:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push frontend image
+        id: build_frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: VITE_API_BASE_URL=/api/v1/accommodation
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/accommodation-frontend:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Configure AWS credentials via GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy on EC2 via AWS SSM Run Command (with automatic rollback)
+        env:
+          NEW_TAG: ${{ steps.meta.outputs.tag }}
+          DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          python3 - << 'PYEOF' > /tmp/ssm-params.json
+          import json, os
+          new_tag = os.environ["NEW_TAG"]
+          dh_user = os.environ["DOCKERHUB_USER"]
+          domain = os.environ["PUBLIC_DOMAIN"]
+          bucket = os.environ["S3_BUCKET"]
+          cmds = [
+              "set -euo pipefail",
+              "cd /opt/accommodation-deploy",
+              "PREV_TAG=$(grep '^IMAGE_TAG=' .env.accommodation | cut -d= -f2)",
+              f"echo \"Previous tag: ${{PREV_TAG}} | New tag: {new_tag}\"",
+              "cp .env.accommodation .env.accommodation.bak",
+              "set -a; source .env.accommodation; set +a",
+              "BACKUP_FILE=\"/tmp/rds-predeploy-$(date -u +%Y%m%dT%H%M%SZ).dump\"",
+              "PGPASSWORD=\"$AWS_RDS_PASSWORD\" pg_dump -Fc -h \"$AWS_RDS_ENDPOINT\" -U \"$AWS_RDS_USER\" -d \"$AWS_RDS_DB\" \"sslmode=verify-full sslrootcert=/opt/accommodation-deploy/ap-south-1-bundle.pem\" > \"$BACKUP_FILE\" || echo 'Pre-deploy pg_dump skipped/warned'",
+              f"if [ -s \"$BACKUP_FILE\" ] && command -v aws >/dev/null 2>&1; then aws s3 cp \"$BACKUP_FILE\" \"s3://{bucket}/backups/$(basename $BACKUP_FILE)\" --sse AES256 || true; fi",
+              "rm -f \"$BACKUP_FILE\"",
+              f"sed -i \"s|^BACKEND_IMAGE=.*|BACKEND_IMAGE={dh_user}/accommodation-backend|\" .env.accommodation",
+              f"sed -i \"s|^FRONTEND_IMAGE=.*|FRONTEND_IMAGE={dh_user}/accommodation-frontend|\" .env.accommodation",
+              f"sed -i \"s|^IMAGE_TAG=.*|IMAGE_TAG={new_tag}|\" .env.accommodation",
+              "docker compose -f docker-compose.accommodation.prod.yml --env-file .env.accommodation pull backend frontend",
+              "docker compose -f docker-compose.accommodation.prod.yml --env-file .env.accommodation up -d backend frontend caddy",
+              "rollback() { echo 'Deployment validation failed - rolling back to previous image tag'; mv .env.accommodation.bak .env.accommodation; docker compose -f docker-compose.accommodation.prod.yml --env-file .env.accommodation up -d backend frontend caddy; exit 1; }",
+              f"for i in $(seq 1 12); do if curl -fsS \"https://{domain}/api/v1/accommodation/ready\" >/dev/null 2>&1; then echo 'HTTPS readiness check PASSED'; rm -f .env.accommodation.bak; exit 0; fi; sleep 5; done",
+              "rollback",
+          ]
+          print(json.dumps({"commands": cmds}))
+          PYEOF
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy Accommodation ${NEW_TAG}" \
+            --parameters file:///tmp/ssm-params.json \
+            --query "Command.CommandId" --output text)
+          echo "SSM Command ID: $CMD_ID"
+          aws ssm wait command-executed --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID"
+          STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" --query "Status" --output text)
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" --query "StandardOutputContent" --output text
+          if [ "$STATUS" != "Success" ]; then
+            aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" --query "StandardErrorContent" --output text
+            exit 1
+          fi
+
+      - name: Record deployed image digests
+        run: |
+          echo "### Deployed Accommodation Images" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tag: \`${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Backend Digest: \`${{ steps.build_backend.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Frontend Digest: \`${{ steps.build_frontend.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"

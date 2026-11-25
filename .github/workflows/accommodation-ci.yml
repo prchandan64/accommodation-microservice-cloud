@@ -1,0 +1,135 @@
+name: Accommodation CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: accommodation-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend-ci:
+    name: Backend Tests, Migrations & Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: accommodation
+          POSTGRES_PASSWORD: accommodation
+          POSTGRES_DB: campus_mobility_accommodation_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U accommodation -d campus_mobility_accommodation_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies and security tools
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt bandit pip-audit
+
+      - name: Verify Alembic migrations on PostgreSQL 16
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://accommodation:accommodation@localhost:5432/campus_mobility_accommodation_test
+        run: alembic upgrade head
+
+      - name: Run pytest suite
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://accommodation:accommodation@localhost:5432/campus_mobility_accommodation_test
+        run: pytest -q
+
+      - name: Run Bandit static security scan
+        working-directory: backend
+        run: bandit -r app -ll
+
+      - name: Run pip-audit dependency vulnerability scan
+        working-directory: backend
+        run: pip-audit -r requirements.txt
+
+  frontend-ci:
+    name: Frontend Tests, Lint, TypeScript & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Run frontend unit tests
+        run: npm test
+
+      - name: Run oxlint
+        run: npm run lint
+
+      - name: Run TypeScript type check
+        run: npx tsc -b
+
+      - name: Run Vite production build
+        run: npm run build
+
+      - name: Run npm dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+  docker-build-verify:
+    name: Docker Build Verification (linux/amd64)
+    needs: [backend-ci, frontend-ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image (linux/amd64, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build frontend image (linux/amd64, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          platforms: linux/amd64
+          build-args: VITE_API_BASE_URL=/api/v1/accommodation
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
